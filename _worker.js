@@ -1,7 +1,7 @@
 
-// 部署完成后在网址后面加上这个，获取自建节点和机场聚合节点，/?token=auto或/auto或
+// 部署完成后使用 `/?token=<TOKEN>` 或 `/<TOKEN>` 获取订阅。
 
-let mytoken = 'auto';
+let mytoken = '';
 let guestToken = ''; //可以随便取，或者uuid生成，https://1024tools.com/uuid
 let BotToken = ''; //可以为空，或者@BotFather中输入/start，/newbot，并关注机器人
 let ChatID = ''; //可以为空，或者@userinfobot中获取，/start
@@ -13,11 +13,10 @@ let timestamp = 4102329600000;//2099-12-31
 
 //节点链接 + 订阅链接
 let MainData = `
-https://cfxr.eu.org/getSub
 `;
 
 let urls = [];
-let subConverter = "SUBAPI.cmliussss.net"; //在线订阅转换后端，目前使用CM的订阅转换功能。支持自建psub 可自行搭建https://github.com/bulianglin/psub
+let subConverter = "";
 let subConfig = "https://raw.githubusercontent.com/cmliu/ACL4SSR/main/Clash/config/ACL4SSR_Online_MultiCountry.ini"; //订阅配置文件
 let subProtocol = 'https';
 
@@ -40,6 +39,15 @@ export default {
 		}
 		subConfig = env.SUBCONFIG || subConfig;
 		FileName = env.SUBNAME || FileName;
+		const allowExternalSubApi = env.ALLOW_EXTERNAL_SUBAPI === 'true';
+		const inlineClash = env.INLINE_CLASH || '';
+		const inlineSingbox = env.INLINE_SINGBOX || '';
+		if (!mytoken) {
+			return new Response('TOKEN is not configured', {
+				status: 500,
+				headers: secureHeaders()
+			});
+		}
 
 		const currentDate = new Date();
 		currentDate.setHours(0, 0, 0, 0);
@@ -55,28 +63,26 @@ export default {
 		let expire = Math.floor(timestamp / 1000);
 		SUBUpdateTime = env.SUBUPTIME || SUBUpdateTime;
 
-		if (!([mytoken, fakeToken, 访客订阅].includes(token) || url.pathname == ("/" + mytoken) || url.pathname.includes("/" + mytoken + "?"))) {
+		const isAuthorized = token === mytoken || decodeURIComponent(url.pathname) === `/${mytoken}`;
+		if (!isAuthorized) {
 			if (TG == 1 && url.pathname !== "/" && url.pathname !== "/favicon.ico") await sendMessage(`#异常访问 ${FileName}`, request.headers.get('CF-Connecting-IP'), `UA: ${userAgent}</tg-spoiler>\n域名: ${url.hostname}\n<tg-spoiler>入口: ${url.pathname + url.search}</tg-spoiler>`);
-			if (env.URL302) return Response.redirect(env.URL302, 302);
-			else if (env.URL) return await proxyURL(env.URL, url);
-			else return new Response(await nginx(), {
-				status: 200,
-				headers: {
-					'Content-Type': 'text/html; charset=UTF-8',
-				},
+			return new Response('Not Found', {
+				status: 404,
+				headers: secureHeaders()
 			});
 		} else {
 			if (env.KV) {
 				await 迁移地址列表(env, 'LINK.txt');
-				if (userAgent.includes('mozilla') && !url.search) {
-					await sendMessage(`#编辑订阅 ${FileName}`, request.headers.get('CF-Connecting-IP'), `UA: ${userAgentHeader}</tg-spoiler>\n域名: ${url.hostname}\n<tg-spoiler>入口: ${url.pathname + url.search}</tg-spoiler>`);
-					return await KV(request, env, 'LINK.txt', 访客订阅);
-				} else {
-					MainData = await env.KV.get('LINK.txt') || MainData;
-				}
+				MainData = await env.KV.get('LINK.txt') || env.LINK || MainData;
 			} else {
 				MainData = env.LINK || MainData;
 				if (env.LINKSUB) urls = await ADD(env.LINKSUB);
+			}
+			if (!MainData.trim() && urls.length === 0) {
+				return new Response('LINK is not configured', {
+					status: 500,
+					headers: secureHeaders()
+				});
 			}
 			let 重新汇总所有链接 = await ADD(MainData + '\n' + urls.join('\n'));
 			let 自建节点 = "";
@@ -126,7 +132,7 @@ export default {
 				console.log(请求订阅响应内容);
 				req_data += 请求订阅响应内容[0].join('\n');
 				订阅转换URL += "|" + 请求订阅响应内容[1];
-				if (订阅格式 == 'base64' && !isSubConverterRequest && 请求订阅响应内容[1].includes('://')) {
+				if (allowExternalSubApi && 订阅格式 == 'base64' && !isSubConverterRequest && 请求订阅响应内容[1].includes('://')) {
 					subConverterUrl = `${subProtocol}://${subConverter}/sub?target=mixed&url=${encodeURIComponent(请求订阅响应内容[1])}&insert=false&config=${encodeURIComponent(subConfig)}&emoji=true&list=false&tfo=false&scv=true&fdn=false&sort=false&new_name=true`;
 					try {
 						const subConverterResponse = await fetch(subConverterUrl, { headers: { 'User-Agent': 'v2rayN/CF-Workers-SUB  (https://github.com/cmliu/CF-Workers-SUB)' } });
@@ -185,10 +191,29 @@ export default {
 				"content-type": "text/plain; charset=utf-8",
 				"Profile-Update-Interval": `${SUBUpdateTime}`,
 				"Profile-web-page-url": request.url.includes('?') ? request.url.split('?')[0] : request.url,
+				"Cache-Control": "private, no-store, max-age=0",
+				"X-Robots-Tag": "noindex, nofollow, noarchive",
+				"X-Content-Type-Options": "nosniff",
 				//"Subscription-Userinfo": `upload=${UD}; download=${UD}; total=${total}; expire=${expire}`,
 			};
 
 			if (订阅格式 == 'base64' || token == fakeToken) {
+				return new Response(base64Data, { headers: responseHeaders });
+			} else if (订阅格式 == 'clash' && inlineClash) {
+				const clashHeaders = {
+					...responseHeaders,
+					"content-type": "text/yaml; charset=utf-8"
+				};
+				if (!userAgent.includes('mozilla')) clashHeaders["Content-Disposition"] = `attachment; filename*=utf-8''${encodeURIComponent(`${FileName}.yaml`)}`;
+				return new Response(inlineClash, { headers: clashHeaders });
+			} else if (订阅格式 == 'singbox' && inlineSingbox) {
+				const singboxHeaders = {
+					...responseHeaders,
+					"content-type": "application/json; charset=utf-8"
+				};
+				if (!userAgent.includes('mozilla')) singboxHeaders["Content-Disposition"] = `attachment; filename*=utf-8''${encodeURIComponent(`${FileName}.json`)}`;
+				return new Response(inlineSingbox, { headers: singboxHeaders });
+			} else if (!allowExternalSubApi || !subConverter) {
 				return new Response(base64Data, { headers: responseHeaders });
 			} else if (订阅格式 == 'clash') {
 				subConverterUrl = `${subProtocol}://${subConverter}/sub?target=clash&url=${encodeURIComponent(订阅转换URL)}&insert=false&config=${encodeURIComponent(subConfig)}&emoji=true&list=false&tfo=false&scv=true&fdn=false&sort=false&new_name=true`;
@@ -256,6 +281,15 @@ async function nginx() {
 	</html>
 	`
 	return text;
+}
+
+function secureHeaders(contentType = 'text/plain; charset=utf-8') {
+	return {
+		'Content-Type': contentType,
+		'Cache-Control': 'private, no-store, max-age=0',
+		'X-Robots-Tag': 'noindex, nofollow, noarchive',
+		'X-Content-Type-Options': 'nosniff'
+	};
 }
 
 async function sendMessage(type, ip, add_data = "") {
