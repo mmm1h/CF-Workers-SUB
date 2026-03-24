@@ -26,6 +26,7 @@ export default {
 		const userAgent = userAgentHeader ? userAgentHeader.toLowerCase() : "null";
 		const url = new URL(request.url);
 		const token = url.searchParams.get('token');
+		const statsPushToken = env.STATS_PUSH_TOKEN || '';
 		mytoken = env.TOKEN || mytoken;
 		BotToken = env.TGTOKEN || BotToken;
 		ChatID = env.TGID || ChatID;
@@ -42,6 +43,9 @@ export default {
 		const allowExternalSubApi = env.ALLOW_EXTERNAL_SUBAPI === 'true';
 		const inlineClash = env.INLINE_CLASH || '';
 		const inlineSingbox = env.INLINE_SINGBOX || '';
+		if (url.pathname === '/_internal/subscription-userinfo') {
+			return handleSubscriptionUserinfoSync(request, env, statsPushToken);
+		}
 		if (!mytoken) {
 			return new Response('TOKEN is not configured', {
 				status: 500,
@@ -194,8 +198,11 @@ export default {
 				"Cache-Control": "private, no-store, max-age=0",
 				"X-Robots-Tag": "noindex, nofollow, noarchive",
 				"X-Content-Type-Options": "nosniff",
-				//"Subscription-Userinfo": `upload=${UD}; download=${UD}; total=${total}; expire=${expire}`,
 			};
+			const subscriptionUserinfo = await getSubscriptionUserinfoHeader(env);
+			if (subscriptionUserinfo) {
+				responseHeaders["Subscription-Userinfo"] = subscriptionUserinfo;
+			}
 
 			if (订阅格式 == 'base64' || token == fakeToken) {
 				return new Response(base64Data, { headers: responseHeaders });
@@ -290,6 +297,92 @@ function secureHeaders(contentType = 'text/plain; charset=utf-8') {
 		'X-Robots-Tag': 'noindex, nofollow, noarchive',
 		'X-Content-Type-Options': 'nosniff'
 	};
+}
+
+function notFoundResponse() {
+	return new Response('Not Found', {
+		status: 404,
+		headers: secureHeaders()
+	});
+}
+
+function normalizeUInt(value) {
+	if (typeof value === 'string' && value.trim() !== '') {
+		value = Number(value);
+	}
+	if (!Number.isFinite(value) || value < 0) {
+		return null;
+	}
+	return Math.floor(value);
+}
+
+async function handleSubscriptionUserinfoSync(request, env, expectedToken) {
+	if (request.method !== 'POST' || !expectedToken) {
+		return notFoundResponse();
+	}
+	if (request.headers.get('X-Stats-Token') !== expectedToken) {
+		return notFoundResponse();
+	}
+	if (!env.KV) {
+		return new Response('KV is not configured', {
+			status: 500,
+			headers: secureHeaders()
+		});
+	}
+
+	let payload;
+	try {
+		payload = await request.json();
+	} catch {
+		return new Response('Bad Request', {
+			status: 400,
+			headers: secureHeaders()
+		});
+	}
+
+	const upload = normalizeUInt(payload?.upload);
+	const download = normalizeUInt(payload?.download);
+	const totalBytes = normalizeUInt(payload?.total);
+	const expire = normalizeUInt(payload?.expire);
+	if ([upload, download, totalBytes, expire].some((value) => value === null)) {
+		return new Response('Bad Request', {
+			status: 400,
+			headers: secureHeaders()
+		});
+	}
+
+	const normalized = {
+		upload,
+		download,
+		total: totalBytes,
+		expire,
+		updated_at: new Date().toISOString()
+	};
+	await env.KV.put('subscription_userinfo', JSON.stringify(normalized));
+	return new Response('', {
+		status: 204,
+		headers: secureHeaders()
+	});
+}
+
+async function getSubscriptionUserinfoHeader(env) {
+	if (!env.KV) {
+		return null;
+	}
+	try {
+		const payload = await env.KV.get('subscription_userinfo', 'json');
+		const upload = normalizeUInt(payload?.upload);
+		const download = normalizeUInt(payload?.download);
+		const totalBytes = normalizeUInt(payload?.total);
+		const expire = normalizeUInt(payload?.expire);
+		if ([upload, download, totalBytes, expire].some((value) => value === null)) {
+			return null;
+		}
+		return `upload=${upload}; download=${download}; total=${totalBytes}; expire=${expire}`;
+	} catch (error) {
+		console.log('load subscription userinfo failed', error);
+		return null;
+	}
 }
 
 async function sendMessage(type, ip, add_data = "") {
