@@ -5,8 +5,12 @@ permissions:
 
 on:
   schedule:
-    - cron: "0 0 * * *" # every day
+    - cron: "0 */6 * * *" # every 6 hours
   workflow_dispatch:
+
+concurrency:
+  group: upstream-sync-main
+  cancel-in-progress: false
 
 jobs:
   sync_latest_from_upstream:
@@ -17,17 +21,17 @@ jobs:
     steps:
       # Step 1: run a standard checkout action
       - name: Checkout target repo
-        uses: actions/checkout@v3
+        uses: actions/checkout@v6.0.2
 
       # Step 2: run the sync action
       - name: Sync upstream changes
         id: sync
-        uses: aormsby/Fork-Sync-With-Upstream-action@v3.4
+        uses: aormsby/Fork-Sync-With-Upstream-action@v3.4.3
         with:
           upstream_sync_repo: cmliu/CF-Workers-SUB
           upstream_sync_branch: main
           target_sync_branch: main
-          target_repo_token: ${{ secrets.GITHUB_TOKEN }} # automatically generated, no need to set
+          target_repo_token: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
 
           # Set test_mode true to run tests instead of the true action!!
           test_mode: false
